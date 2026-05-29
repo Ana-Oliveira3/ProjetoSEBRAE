@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Activity,
   AlertTriangle,
@@ -17,6 +17,8 @@ import {
   Info,
   LifeBuoy,
   LockKeyhole,
+  LogIn,
+  LogOut,
   MessageCircleHeart,
   Pause,
   PhoneCall,
@@ -32,6 +34,7 @@ import {
   Trash2,
   TrendingUp,
   Trophy,
+  UserPlus,
   Users,
   Wind,
   Zap,
@@ -40,11 +43,11 @@ import heroImg from './assets/hero.png'
 import './App.css'
 
 const STORAGE_KEYS = {
-  checkins: 'mindup:checkins',
-  habits: 'mindup:habits',
-  posts: 'mindup:posts',
-  consent: 'mindup:privacyConsent',
+  users: 'mindup:users',
+  session: 'mindup:session',
 }
+
+const DEMO_CHECKIN_IDS = new Set([101, 102, 103, 104, 105, 106, 107])
 
 const moods = [
   {
@@ -110,79 +113,6 @@ const habits = [
   { id: 'pausa', label: 'Fazer uma pausa', icon: Pause },
   { id: 'sono', label: 'Preparar o sono', icon: CalendarCheck },
   { id: 'apoio', label: 'Falar com alguém seguro', icon: HeartHandshake },
-]
-
-const seedCheckins = [
-  {
-    id: 101,
-    day: 'Seg',
-    moodId: 'neutro',
-    moodLabel: 'Neutro',
-    score: 64,
-    stress: 42,
-    note: 'Organizei a semana por blocos menores.',
-    createdAt: '2026-05-15T09:10:00.000Z',
-  },
-  {
-    id: 102,
-    day: 'Ter',
-    moodId: 'ansioso',
-    moodLabel: 'Ansioso',
-    score: 56,
-    stress: 58,
-    note: 'Prova chegando e muitas tarefas acumuladas.',
-    createdAt: '2026-05-16T11:20:00.000Z',
-  },
-  {
-    id: 103,
-    day: 'Qua',
-    moodId: 'ansioso',
-    moodLabel: 'Ansioso',
-    score: 48,
-    stress: 66,
-    note: 'Redes sociais aumentaram a comparação.',
-    createdAt: '2026-05-17T14:35:00.000Z',
-  },
-  {
-    id: 104,
-    day: 'Qui',
-    moodId: 'leve',
-    moodLabel: 'Leve',
-    score: 70,
-    stress: 40,
-    note: 'Conversei com uma pessoa de confiança.',
-    createdAt: '2026-05-18T16:15:00.000Z',
-  },
-  {
-    id: 105,
-    day: 'Sex',
-    moodId: 'leve',
-    moodLabel: 'Leve',
-    score: 78,
-    stress: 34,
-    note: 'Pausa e sono ajudaram bastante.',
-    createdAt: '2026-05-19T19:45:00.000Z',
-  },
-  {
-    id: 106,
-    day: 'Sab',
-    moodId: 'neutro',
-    moodLabel: 'Neutro',
-    score: 74,
-    stress: 28,
-    note: 'Dia mais tranquilo, sem pressa.',
-    createdAt: '2026-05-20T13:05:00.000Z',
-  },
-  {
-    id: 107,
-    day: 'Dom',
-    moodId: 'neutro',
-    moodLabel: 'Neutro',
-    score: 62,
-    stress: 45,
-    note: 'Planejei a volta às aulas.',
-    createdAt: '2026-05-21T08:00:00.000Z',
-  },
 ]
 
 const firstPosts = [
@@ -294,6 +224,14 @@ function writeStorage(key, value) {
   window.localStorage.setItem(key, JSON.stringify(value))
 }
 
+function removeStorage(key) {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  window.localStorage.removeItem(key)
+}
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
@@ -321,6 +259,210 @@ function formatDate(value) {
 
 function cleanText(value, limit = 260) {
   return value.replace(/\s+/g, ' ').trim().slice(0, limit)
+}
+
+function normalizeEmail(value) {
+  return cleanText(value, 120).toLowerCase()
+}
+
+function createUserId() {
+  return `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function createDefaultUserData() {
+  return {
+    privacyConsent: false,
+    checkins: [],
+    habits: ['agua', 'pausa'],
+    posts: firstPosts.map(normalizePost),
+  }
+}
+
+function isDemoCheckin(entry) {
+  return (
+    DEMO_CHECKIN_IDS.has(entry?.id) &&
+    String(entry?.createdAt ?? '').startsWith('2026-05-')
+  )
+}
+
+function normalizeUserData(data = {}) {
+  const defaults = createDefaultUserData()
+
+  return {
+    privacyConsent: Boolean(data.privacyConsent),
+    checkins: Array.isArray(data.checkins)
+      ? data.checkins
+          .filter((entry) => !isDemoCheckin(entry))
+          .map((entry) => ({ ...entry }))
+      : defaults.checkins,
+    habits: Array.isArray(data.habits) ? [...data.habits] : defaults.habits,
+    posts: Array.isArray(data.posts)
+      ? data.posts.map(normalizePost)
+      : defaults.posts,
+  }
+}
+
+function normalizeUser(user) {
+  const email = normalizeEmail(user?.email)
+
+  return {
+    id: user?.id || createUserId(),
+    name: cleanText(user?.name || email.split('@')[0] || 'Usuário', 80),
+    email,
+    passwordHash: String(user?.passwordHash || ''),
+    createdAt: user?.createdAt || new Date().toISOString(),
+    updatedAt: user?.updatedAt || user?.createdAt || new Date().toISOString(),
+    data: normalizeUserData(user?.data),
+  }
+}
+
+function readUsers() {
+  const users = readStorage(STORAGE_KEYS.users, [])
+
+  return Array.isArray(users)
+    ? users.map(normalizeUser).filter((user) => user.email)
+    : []
+}
+
+function mergeUsers(primaryUsers, secondaryUsers) {
+  const usersByEmail = new Map()
+
+  primaryUsers.map(normalizeUser).forEach((user) => {
+    usersByEmail.set(user.email, user)
+  })
+
+  secondaryUsers.map(normalizeUser).forEach((user) => {
+    const existingUser = usersByEmail.get(user.email)
+    const existingTime = Date.parse(existingUser?.updatedAt || 0)
+    const userTime = Date.parse(user.updatedAt || 0)
+
+    if (!existingUser || userTime > existingTime) {
+      usersByEmail.set(user.email, user)
+    }
+  })
+
+  return Array.from(usersByEmail.values())
+}
+
+async function readServerUsers() {
+  if (typeof fetch === 'undefined') {
+    return null
+  }
+
+  const response = await fetch('/api/users', {
+    cache: 'no-store',
+    headers: { Accept: 'application/json' },
+  })
+
+  if (!response.ok) {
+    return null
+  }
+
+  const payload = await response.json()
+  return Array.isArray(payload.users)
+    ? payload.users.map(normalizeUser).filter((user) => user.email)
+    : []
+}
+
+async function writePersistentUsers(users) {
+  const normalizedUsers = users.map(normalizeUser).filter((user) => user.email)
+
+  writeStorage(STORAGE_KEYS.users, normalizedUsers)
+
+  try {
+    const response = await fetch('/api/users', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ users: normalizedUsers }),
+    })
+
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
+async function readPersistentUsers() {
+  const localUsers = readUsers()
+
+  try {
+    const serverUsers = await readServerUsers()
+
+    if (serverUsers) {
+      const mergedUsers = mergeUsers(serverUsers, localUsers)
+
+      writeStorage(STORAGE_KEYS.users, mergedUsers)
+
+      if (mergedUsers.length !== serverUsers.length) {
+        await writePersistentUsers(mergedUsers)
+      }
+
+      return mergedUsers
+    }
+  } catch {
+    return localUsers
+  }
+
+  return localUsers
+}
+
+function readInitialAuth() {
+  const users = readUsers()
+  const sessionId = readStorage(STORAGE_KEYS.session, null)
+  const currentUserId = users.some((user) => user.id === sessionId)
+    ? sessionId
+    : null
+
+  if (sessionId && !currentUserId) {
+    removeStorage(STORAGE_KEYS.session)
+  }
+
+  return { users, currentUserId }
+}
+
+async function createPasswordHash(value) {
+  const normalized = String(value)
+
+  if (typeof window !== 'undefined' && window.crypto?.subtle) {
+    const payload = new TextEncoder().encode(normalized)
+    const digest = await window.crypto.subtle.digest('SHA-256', payload)
+
+    return Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('')
+  }
+
+  let hash = 0
+
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash = (hash << 5) - hash + normalized.charCodeAt(index)
+    hash |= 0
+  }
+
+  return `local-${Math.abs(hash)}-${normalized.length}`
+}
+
+function getFirstName(name) {
+  return cleanText(name, 80).split(/\s+/)[0] || 'usuário'
+}
+
+function isRunningStandalone() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  return (
+    window.matchMedia('(display-mode: standalone)').matches ||
+    window.navigator.standalone === true
+  )
+}
+
+function isPageScrolled() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  return window.scrollY > 24
 }
 
 function detectUnsafePost(text) {
@@ -356,6 +498,29 @@ function detectUnsafePost(text) {
 }
 
 function App() {
+  const initialAuth = useMemo(() => readInitialAuth(), [])
+  const initialUserData = useMemo(() => {
+    const initialUser = initialAuth.users.find(
+      (user) => user.id === initialAuth.currentUserId,
+    )
+
+    return normalizeUserData(initialUser?.data)
+  }, [initialAuth])
+
+  const [auth, setAuth] = useState(initialAuth)
+  const [authMode, setAuthMode] = useState('login')
+  const [authForm, setAuthForm] = useState({
+    name: '',
+    email: '',
+    password: '',
+    confirmPassword: '',
+  })
+  const [authMessage, setAuthMessage] = useState('')
+  const [authBusy, setAuthBusy] = useState(false)
+  const [storageReady, setStorageReady] = useState(false)
+  const [installPrompt, setInstallPrompt] = useState(null)
+  const [isStandaloneApp, setIsStandaloneApp] = useState(isRunningStandalone)
+  const [hasScrolled, setHasScrolled] = useState(isPageScrolled)
   const [selectedMood, setSelectedMood] = useState('ansioso')
   const [activeExercise, setActiveExercise] = useState('respiracao')
   const [breathing, setBreathing] = useState(false)
@@ -365,22 +530,15 @@ function App() {
   const [moderationMessage, setModerationMessage] = useState('')
   const [editingCheckinId, setEditingCheckinId] = useState(null)
   const [selectedHistoryId, setSelectedHistoryId] = useState(null)
-  const [privacyConsent, setPrivacyConsent] = useState(() =>
-    readStorage(STORAGE_KEYS.consent, false),
+  const [privacyConsent, setPrivacyConsent] = useState(
+    initialUserData.privacyConsent,
   )
-  const [checkins, setCheckins] = useState(() =>
-    readStorage(STORAGE_KEYS.checkins, seedCheckins),
-  )
-  const [communityPosts, setCommunityPosts] = useState(() => {
-    const storedPosts = readStorage(STORAGE_KEYS.posts, firstPosts)
-    return Array.isArray(storedPosts)
-      ? storedPosts.map(normalizePost)
-      : firstPosts
-  })
-  const [completedHabits, setCompletedHabits] = useState(() =>
-    readStorage(STORAGE_KEYS.habits, ['agua', 'pausa']),
-  )
+  const [checkins, setCheckins] = useState(initialUserData.checkins)
+  const [communityPosts, setCommunityPosts] = useState(initialUserData.posts)
+  const [completedHabits, setCompletedHabits] = useState(initialUserData.habits)
 
+  const currentUser =
+    auth.users.find((user) => user.id === auth.currentUserId) ?? null
   const currentMood =
     moods.find((mood) => mood.id === selectedMood) ?? moods[0]
   const currentExercise =
@@ -410,26 +568,42 @@ function App() {
   const habitProgress = Math.round((completedHabits.length / habits.length) * 100)
 
   useEffect(() => {
-    writeStorage(STORAGE_KEYS.consent, privacyConsent)
-  }, [privacyConsent])
-
-  useEffect(() => {
-    if (privacyConsent) {
-      writeStorage(STORAGE_KEYS.checkins, checkins)
+    if (!auth.currentUserId || !storageReady) {
+      return
     }
-  }, [checkins, privacyConsent])
 
-  useEffect(() => {
-    if (privacyConsent) {
-      writeStorage(STORAGE_KEYS.habits, completedHabits)
-    }
-  }, [completedHabits, privacyConsent])
+    const storedUsers = readUsers()
+    const targetUser = storedUsers.find((user) => user.id === auth.currentUserId)
 
-  useEffect(() => {
-    if (privacyConsent) {
-      writeStorage(STORAGE_KEYS.posts, communityPosts)
+    if (!targetUser) {
+      return
     }
-  }, [communityPosts, privacyConsent])
+
+    const nextData = {
+      privacyConsent,
+      checkins,
+      habits: completedHabits,
+      posts: communityPosts.map(normalizePost),
+    }
+    const nextUsers = storedUsers.map((user) =>
+      user.id === auth.currentUserId
+        ? {
+            ...user,
+            data: nextData,
+            updatedAt: new Date().toISOString(),
+          }
+        : user,
+    )
+
+    writePersistentUsers(nextUsers)
+  }, [
+    auth.currentUserId,
+    checkins,
+    communityPosts,
+    completedHabits,
+    privacyConsent,
+    storageReady,
+  ])
 
   useEffect(() => {
     if (!statusMessage) {
@@ -493,6 +667,265 @@ function App() {
       : currentMood.score < 50
         ? 'Seu registro mostra tensão acima do normal. Uma pausa guiada e uma conversa segura podem ajudar antes que a pressão cresça.'
         : 'Os registros da semana estão equilibrados. Continue acompanhando padrões e mantendo hábitos de autocuidado.'
+  const canInstallApp = Boolean(installPrompt) && !isStandaloneApp
+
+  useEffect(() => {
+    const standaloneQuery = window.matchMedia('(display-mode: standalone)')
+    const updateStandaloneStatus = () => setIsStandaloneApp(isRunningStandalone())
+    const handleBeforeInstallPrompt = (event) => {
+      event.preventDefault()
+      setInstallPrompt(event)
+    }
+    const handleAppInstalled = () => {
+      setInstallPrompt(null)
+      setIsStandaloneApp(true)
+      setStatusMessage('MindUp instalado como aplicativo.')
+    }
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
+    window.addEventListener('appinstalled', handleAppInstalled)
+
+    if (standaloneQuery.addEventListener) {
+      standaloneQuery.addEventListener('change', updateStandaloneStatus)
+    } else {
+      standaloneQuery.addListener(updateStandaloneStatus)
+    }
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
+      window.removeEventListener('appinstalled', handleAppInstalled)
+
+      if (standaloneQuery.removeEventListener) {
+        standaloneQuery.removeEventListener('change', updateStandaloneStatus)
+      } else {
+        standaloneQuery.removeListener(updateStandaloneStatus)
+      }
+    }
+  }, [])
+
+  const handleInstallApp = async () => {
+    if (!installPrompt) {
+      return
+    }
+
+    try {
+      await installPrompt.prompt()
+      const choice = await installPrompt.userChoice
+
+      if (choice?.outcome === 'accepted') {
+        setStatusMessage('MindUp instalado como aplicativo.')
+      }
+    } catch {
+      setStatusMessage('Não consegui iniciar a instalação agora.')
+    } finally {
+      setInstallPrompt(null)
+    }
+  }
+
+  useEffect(() => {
+    const updateScrollState = () => {
+      setHasScrolled(isPageScrolled())
+    }
+
+    window.addEventListener('scroll', updateScrollState, { passive: true })
+
+    return () => window.removeEventListener('scroll', updateScrollState)
+  }, [])
+
+  const callPhoneNumber = (number, event) => {
+    event.preventDefault()
+    window.location.href = `tel:${number}`
+  }
+
+  const loadUserData = useCallback((user) => {
+    const data = normalizeUserData(user.data)
+
+    setSelectedMood('ansioso')
+    setActiveExercise('respiracao')
+    setBreathing(false)
+    setNote('')
+    setAnonymousDraft('')
+    setModerationMessage('')
+    setEditingCheckinId(null)
+    setSelectedHistoryId(null)
+    setPrivacyConsent(data.privacyConsent)
+    setCheckins(data.checkins)
+    setCompletedHabits(data.habits)
+    setCommunityPosts(data.posts)
+  }, [])
+
+  useEffect(() => {
+    let isActive = true
+
+    readPersistentUsers()
+      .then((users) => {
+        if (!isActive) {
+          return
+        }
+
+        const sessionId = readStorage(STORAGE_KEYS.session, null)
+        const currentUserId = users.some((user) => user.id === sessionId)
+          ? sessionId
+          : null
+
+        if (sessionId && !currentUserId) {
+          removeStorage(STORAGE_KEYS.session)
+        }
+
+        setAuth({ users, currentUserId })
+
+        if (currentUserId) {
+          const user = users.find((item) => item.id === currentUserId)
+          if (user) {
+            loadUserData(user)
+          }
+        }
+
+        setStorageReady(true)
+      })
+      .catch(() => {
+        if (isActive) {
+          setStorageReady(true)
+        }
+      })
+
+    return () => {
+      isActive = false
+    }
+  }, [loadUserData])
+
+  const updateAuthField = (event) => {
+    const { name, value } = event.target
+
+    setAuthForm((current) => ({
+      ...current,
+      [name]: value,
+    }))
+  }
+
+  const changeAuthMode = (mode) => {
+    setAuthMode(mode)
+    setAuthMessage('')
+    setAuthForm((current) => ({
+      ...current,
+      password: '',
+      confirmPassword: '',
+    }))
+  }
+
+  const handleAuthSubmit = async (event) => {
+    event.preventDefault()
+    setAuthMessage('')
+
+    const isRegistering = authMode === 'register'
+    const name = cleanText(authForm.name, 80)
+    const email = normalizeEmail(authForm.email)
+    const password = authForm.password
+
+    if (!email || !email.includes('@')) {
+      setAuthMessage('Digite um e-mail válido para continuar.')
+      return
+    }
+
+    if (password.length < 4) {
+      setAuthMessage('Use uma senha com pelo menos 4 caracteres.')
+      return
+    }
+
+    if (isRegistering && !name) {
+      setAuthMessage('Digite seu nome para criar a conta.')
+      return
+    }
+
+    if (isRegistering && password !== authForm.confirmPassword) {
+      setAuthMessage('As senhas não conferem.')
+      return
+    }
+
+    setAuthBusy(true)
+
+    try {
+      const latestUsers = await readPersistentUsers()
+      const passwordHash = await createPasswordHash(`${email}:${password}`)
+
+      if (isRegistering) {
+        const alreadyExists = latestUsers.some((user) => user.email === email)
+
+        if (alreadyExists) {
+          setAuthMessage('Já existe uma conta com esse e-mail.')
+          return
+        }
+
+        const now = new Date().toISOString()
+        const userData = createDefaultUserData()
+        const nextUser = {
+          id: createUserId(),
+          name,
+          email,
+          passwordHash,
+          createdAt: now,
+          updatedAt: now,
+          data: userData,
+        }
+        const nextUsers = [...latestUsers, nextUser]
+
+        await writePersistentUsers(nextUsers)
+        writeStorage(STORAGE_KEYS.session, nextUser.id)
+        setAuth({ users: nextUsers, currentUserId: nextUser.id })
+        setStorageReady(true)
+        loadUserData(nextUser)
+        setAuthForm({
+          name: '',
+          email: '',
+          password: '',
+          confirmPassword: '',
+        })
+        setStatusMessage(`Conta criada. Olá, ${getFirstName(name)}!`)
+        return
+      }
+
+      const foundUser = latestUsers.find((user) => user.email === email)
+
+      if (!foundUser) {
+        setAuthMessage('Conta não encontrada. Faça o cadastro primeiro.')
+        return
+      }
+
+      if (foundUser.passwordHash !== passwordHash) {
+        setAuthMessage('Senha incorreta. Tente novamente.')
+        return
+      }
+
+      writeStorage(STORAGE_KEYS.session, foundUser.id)
+      setAuth({ users: latestUsers, currentUserId: foundUser.id })
+      setStorageReady(true)
+      loadUserData(foundUser)
+      setAuthForm({
+        name: '',
+        email: '',
+        password: '',
+        confirmPassword: '',
+      })
+      setStatusMessage(`Olá, ${getFirstName(foundUser.name)}! Dados carregados.`)
+    } catch {
+      setAuthMessage('Não consegui acessar a conta agora. Tente novamente.')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  const handleLogout = () => {
+    removeStorage(STORAGE_KEYS.session)
+    setAuth({ users: readUsers(), currentUserId: null })
+    setAuthMode('login')
+    setAuthMessage('')
+    setAuthForm({
+      name: '',
+      email: '',
+      password: '',
+      confirmPassword: '',
+    })
+  }
 
   const saveCheckin = () => {
     const createdAt = new Date()
@@ -535,11 +968,7 @@ function App() {
 
     setCheckins((current) => [...current.slice(-20), nextCheckin])
     setNote('')
-    setStatusMessage(
-      privacyConsent
-        ? 'Check-in salvo no navegador.'
-        : 'Check-in salvo nesta sessão. Aceite o aviso de privacidade para manter os dados no navegador.',
-    )
+    setStatusMessage('Check-in salvo na sua conta.')
   }
 
   const startEditingCheckin = () => {
@@ -576,20 +1005,13 @@ function App() {
       return
     }
 
-    const shouldDelete = window.confirm(
-      'Excluir este check-in do histórico? Essa ação não pode ser desfeita.',
-    )
-
-    if (!shouldDelete) {
-      return
-    }
-
+    const deletedEntryId = selectedHistoryEntry.id
     setCheckins((current) =>
-      current.filter((entry) => entry.id !== selectedHistoryEntry.id),
+      current.filter((entry) => entry.id !== deletedEntryId),
     )
     setSelectedHistoryId(null)
 
-    if (editingCheckinId === selectedHistoryEntry.id) {
+    if (editingCheckinId === deletedEntryId) {
       setEditingCheckinId(null)
       setNote('')
     }
@@ -669,21 +1091,247 @@ function App() {
   }
 
   const clearLocalData = () => {
-    Object.values(STORAGE_KEYS).forEach((key) => {
-      window.localStorage.removeItem(key)
-      window.localStorage.removeItem(key.replace('mindup:', 'mindspace:'))
-    })
+    const shouldClear = window.confirm(
+      'Apagar check-ins, hábitos e mensagens da sua conta local?',
+    )
+
+    if (!shouldClear) {
+      return
+    }
+
+    const cleanData = createDefaultUserData()
 
     setPrivacyConsent(false)
-    setCheckins(seedCheckins)
-    setCompletedHabits(['agua', 'pausa'])
-    setCommunityPosts(firstPosts)
-    setStatusMessage('Dados locais apagados.')
+    setCheckins(cleanData.checkins)
+    setCompletedHabits(cleanData.habits)
+    setCommunityPosts(cleanData.posts)
+    setEditingCheckinId(null)
+    setSelectedHistoryId(null)
+    setNote('')
+    setAnonymousDraft('')
+    setStatusMessage('Dados da sua conta local apagados.')
+  }
+
+  const historyPanel = (
+    <section className="history-panel inline-history" aria-labelledby="history-title">
+      <div className="history-header">
+        <div className="panel-title">
+          <ClipboardList size={22} aria-hidden="true" />
+          <div>
+            <h3 id="history-title">Histórico recente</h3>
+            <p>Últimos registros salvos no painel.</p>
+          </div>
+        </div>
+
+        <div className="history-actions" aria-label="Ações do histórico">
+          <button
+            className="mini-button"
+            type="button"
+            onClick={startEditingCheckin}
+            disabled={!selectedHistoryEntry}
+          >
+            Editar
+          </button>
+          <button
+            className="mini-button danger-mini"
+            type="button"
+            onClick={deleteSelectedCheckin}
+            disabled={!selectedHistoryEntry}
+          >
+            Excluir
+          </button>
+        </div>
+      </div>
+
+      <div className="history-list">
+        {recentCheckins.length ? (
+          recentCheckins.map((entry) => (
+            <button
+              className="history-item"
+              type="button"
+              key={entry.id}
+              aria-pressed={selectedHistoryEntry?.id === entry.id}
+              onClick={() => selectHistoryCheckin(entry.id)}
+            >
+              <strong>{entry.moodLabel}</strong>
+              <span>{formatDate(entry.createdAt)}</span>
+              <p>{entry.note}</p>
+            </button>
+          ))
+        ) : (
+          <p className="empty-history">Nenhum check-in salvo ainda.</p>
+        )}
+      </div>
+    </section>
+  )
+
+  if (!currentUser) {
+    const isRegistering = authMode === 'register'
+
+    return (
+      <div className="app auth-shell">
+        <main className="auth-main" id="login">
+          <section className="auth-intro" aria-labelledby="auth-title">
+            <div className="brand auth-brand" aria-label="MindUp">
+              <span className="brand-mark">
+                <Brain size={24} aria-hidden="true" />
+              </span>
+              <span>
+                MindUp
+                <small>Cuidar da mente também faz parte do futuro.</small>
+              </span>
+            </div>
+
+            <p className="eyebrow">Conta local MindUp</p>
+            <h1 id="auth-title">Entre para acessar seu painel emocional.</h1>
+            <p className="lead">
+              Cada cadastro mantém check-ins, hábitos e mensagens separados
+              neste navegador.
+            </p>
+
+            <div className="auth-benefits" aria-label="Dados salvos na conta">
+              <span>
+                <HeartPulse size={18} aria-hidden="true" />
+                Check-ins
+              </span>
+              <span>
+                <CheckCircle2 size={18} aria-hidden="true" />
+                Hábitos
+              </span>
+              <span>
+                <LockKeyhole size={18} aria-hidden="true" />
+                Dados locais
+              </span>
+            </div>
+          </section>
+
+          <section className="auth-card" aria-label="Login e cadastro">
+            <div className="auth-tabs" aria-label="Escolha login ou cadastro">
+              <button
+                type="button"
+                aria-pressed={authMode === 'login'}
+                onClick={() => changeAuthMode('login')}
+              >
+                <LogIn size={18} aria-hidden="true" />
+                Entrar
+              </button>
+              <button
+                type="button"
+                aria-pressed={authMode === 'register'}
+                onClick={() => changeAuthMode('register')}
+              >
+                <UserPlus size={18} aria-hidden="true" />
+                Cadastro
+              </button>
+            </div>
+
+            <form className="auth-form" onSubmit={handleAuthSubmit}>
+              {isRegistering ? (
+                <label className="auth-field">
+                  Nome
+                  <input
+                    name="name"
+                    value={authForm.name}
+                    onChange={updateAuthField}
+                    autoComplete="name"
+                    placeholder="Seu nome"
+                  />
+                </label>
+              ) : null}
+
+              <label className="auth-field">
+                E-mail
+                <input
+                  type="email"
+                  name="email"
+                  value={authForm.email}
+                  onChange={updateAuthField}
+                  autoComplete="email"
+                  placeholder="voce@email.com"
+                />
+              </label>
+
+              <label className="auth-field">
+                Senha
+                <input
+                  type="password"
+                  name="password"
+                  value={authForm.password}
+                  onChange={updateAuthField}
+                  autoComplete={isRegistering ? 'new-password' : 'current-password'}
+                  placeholder="Mínimo 4 caracteres"
+                />
+              </label>
+
+              {isRegistering ? (
+                <label className="auth-field">
+                  Confirmar senha
+                  <input
+                    type="password"
+                    name="confirmPassword"
+                    value={authForm.confirmPassword}
+                    onChange={updateAuthField}
+                    autoComplete="new-password"
+                    placeholder="Repita a senha"
+                  />
+                </label>
+              ) : null}
+
+              <button
+                className="control-button auth-submit"
+                type="submit"
+                disabled={authBusy}
+              >
+                {isRegistering ? (
+                  <UserPlus size={18} aria-hidden="true" />
+                ) : (
+                  <LogIn size={18} aria-hidden="true" />
+                )}
+                {authBusy
+                  ? 'Aguarde...'
+                  : isRegistering
+                    ? 'Criar conta'
+                    : 'Entrar'}
+              </button>
+            </form>
+
+            {authMessage ? (
+              <p className="auth-message" role="alert">
+                {authMessage}
+              </p>
+            ) : null}
+
+            <p className="auth-note">
+              <ShieldCheck size={17} aria-hidden="true" />
+              Os dados ficam salvos apenas neste computador e navegador.
+            </p>
+
+            {canInstallApp ? (
+              <button
+                className="mini-button install-app-button"
+                type="button"
+                onClick={handleInstallApp}
+              >
+                <Download size={16} aria-hidden="true" />
+                Instalar app
+              </button>
+            ) : null}
+          </section>
+        </main>
+
+        {statusMessage ? (
+          <div className="toast" role="status">
+            <Info size={18} aria-hidden="true" />
+            {statusMessage}
+          </div>
+        ) : null}
+      </div>
+    )
   }
 
   return (
     <div className="app">
-      <header className="topbar">
+      <header className={`topbar ${hasScrolled ? 'is-scrolled' : ''}`}>
         <a className="brand" href="#inicio" aria-label="Início do MindUp">
           <span className="brand-mark">
             <Brain size={24} aria-hidden="true" />
@@ -694,13 +1342,36 @@ function App() {
           </span>
         </a>
 
-        <nav className="nav-links" aria-label="Seções do MindUp">
-          <a href="#checkin">Check-in</a>
-          <a href="#monitoramento">Monitoramento</a>
-          <a href="#ia">IA</a>
-          <a href="#pitch">Pitch</a>
-          <a href="#emergencia">Emergência</a>
-        </nav>
+        <div className="topbar-actions">
+          <nav className="nav-links" aria-label="Seções do MindUp">
+            <a href="#checkin">Check-in</a>
+            <a href="#monitoramento">Monitoramento</a>
+            <a href="#ia">IA</a>
+            <a href="#pitch">Pitch</a>
+            <a href="#emergencia">Emergência</a>
+          </nav>
+
+          <div className="account-area" aria-label="Conta logada">
+            {canInstallApp ? (
+              <button
+                className="mini-button install-app-button"
+                type="button"
+                onClick={handleInstallApp}
+              >
+                <Download size={16} aria-hidden="true" />
+                Instalar app
+              </button>
+            ) : null}
+            <span className="account-pill">
+              <Users size={16} aria-hidden="true" />
+              {getFirstName(currentUser.name)}
+            </span>
+            <button className="logout-button" type="button" onClick={handleLogout}>
+              <LogOut size={16} aria-hidden="true" />
+              Sair
+            </button>
+          </div>
+        </div>
       </header>
 
       <main>
@@ -837,6 +1508,8 @@ function App() {
                   Cancelar edição
                 </button>
               ) : null}
+
+              {historyPanel}
             </section>
 
             <section className="tool-panel breathing-panel" id="respirar">
@@ -932,56 +1605,6 @@ function App() {
             </section>
           </div>
 
-          <section className="history-panel" aria-labelledby="history-title">
-            <div className="history-header">
-              <div className="panel-title">
-                <ClipboardList size={22} aria-hidden="true" />
-                <div>
-                  <h3 id="history-title">Histórico recente</h3>
-                  <p>Últimos registros salvos no painel.</p>
-                </div>
-              </div>
-
-              <div className="history-actions" aria-label="Ações do histórico">
-                <button
-                  className="mini-button"
-                  type="button"
-                  onClick={startEditingCheckin}
-                  disabled={!selectedHistoryEntry}
-                >
-                  Editar
-                </button>
-                <button
-                  className="mini-button danger-mini"
-                  type="button"
-                  onClick={deleteSelectedCheckin}
-                  disabled={!selectedHistoryEntry}
-                >
-                  Excluir
-                </button>
-              </div>
-            </div>
-
-            <div className="history-list">
-              {recentCheckins.length ? (
-                recentCheckins.map((entry) => (
-                  <button
-                    className="history-item"
-                    type="button"
-                    key={entry.id}
-                    aria-pressed={selectedHistoryEntry?.id === entry.id}
-                    onClick={() => selectHistoryCheckin(entry.id)}
-                  >
-                    <strong>{entry.moodLabel}</strong>
-                    <span>{formatDate(entry.createdAt)}</span>
-                    <p>{entry.note}</p>
-                  </button>
-                ))
-              ) : (
-                <p className="empty-history">Nenhum check-in salvo ainda.</p>
-              )}
-            </div>
-          </section>
         </section>
 
         <section className="ai-section" id="ia" aria-labelledby="ai-title">
@@ -1109,7 +1732,7 @@ function App() {
               <PhoneCall size={24} aria-hidden="true" />
               <h3>CVV 188</h3>
               <p>Atendimento gratuito, anônimo e 24 horas para apoio emocional.</p>
-              <a href="tel:188">
+              <a href="tel:188" onClick={(event) => callPhoneNumber('188', event)}>
                 <PhoneCall size={17} aria-hidden="true" />
                 Ligar 188
               </a>
@@ -1119,7 +1742,7 @@ function App() {
               <ShieldAlert size={24} aria-hidden="true" />
               <h3>SAMU 192</h3>
               <p>Para risco imediato, emergência médica ou crise grave.</p>
-              <a href="tel:192">
+              <a href="tel:192" onClick={(event) => callPhoneNumber('192', event)}>
                 <PhoneCall size={17} aria-hidden="true" />
                 Ligar 192
               </a>
@@ -1230,8 +1853,8 @@ function App() {
               <LockKeyhole size={22} aria-hidden="true" />
               <h3>Privacidade</h3>
               <p>
-                Nesta versão, os registros ficam apenas neste navegador. O usuário
-                pode exportar ou apagar os dados locais.
+                Nesta versão, cada conta fica apenas neste navegador. Ao entrar,
+                o usuário vê seus próprios check-ins, hábitos e mensagens.
               </p>
             </article>
 
@@ -1261,7 +1884,7 @@ function App() {
             </button>
             <button className="mini-button danger-mini" type="button" onClick={clearLocalData}>
               <Trash2 size={16} aria-hidden="true" />
-              Apagar dados locais
+              Apagar meus dados
             </button>
           </div>
         </section>
@@ -1279,8 +1902,8 @@ function App() {
           <div>
             <strong>Privacidade em primeiro lugar</strong>
             <p>
-              Para manter check-ins, hábitos e mensagens neste navegador, o
-              MindUp usa armazenamento local. Você pode apagar tudo quando
+              Sua conta, check-ins, hábitos e mensagens ficam salvos apenas
+              neste navegador. Você pode exportar ou apagar seus dados quando
               quiser.
             </p>
           </div>
